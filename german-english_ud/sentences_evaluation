@@ -1,0 +1,97 @@
+import os
+import sys
+import pandas as pd
+from eflomal_conllu_to_dist_mat import extract_blocks, \
+    conll2graph, get_edge_type_to_parent
+from eflomal_conllu_to_dist_mat import get_alignment_dict as \
+    get_eflomal_alignment_dict
+from A3_conllu_to_mat import get_alignment_dict as \
+    get_A3_alignment_dict
+
+def main(src_conllu_path, trg_conllu_path, elmfo_file, train_mat_pos_file,
+         train_mat_edge_file):
+
+    f_src = open(src_conllu_path, "r", encoding='utf8')
+    f_trg = open(trg_conllu_path, "r", encoding='utf8')
+    f_elmfo = open(elmfo_file, "r", encoding='utf8')
+
+    pos_mat = pd.read_csv(train_mat_pos_file, index_col=0)
+    edge_mat = pd.read_csv(train_mat_edge_file, index_col=0)
+
+    source_blocks = extract_blocks(f_src)
+    trg_blocks = extract_blocks(f_trg)
+
+    ali_blocks = get_eflomal_alignment_dict(f_elmfo) # if A3, trg_blocks)
+    final_dict = {}
+    for i in range(len(trg_blocks)):
+        final_dict[i] = {'src': source_blocks[i], 'trg': trg_blocks[i],
+                         'ali': ali_blocks[i]}
+
+    # smoothing the matrices
+    pos_mat += 1
+    edge_mat += 1
+
+    # transforming into a transition probability matrix
+    pos_prob = pos_mat.div(pos_mat.sum(axis=1), axis=0)
+    edge_prob = edge_mat.div(edge_mat.sum(axis=1), axis=0)
+    pos_prob.to_csv("pos_prob_eflomal.csv")
+    edge_prob.to_csv("esdge_prob_eflomal.csv")
+
+    pos_score_list = []
+    edge_score_list = []
+    for k, v in final_dict.items():
+        nodes_src, graph_src = conll2graph(v['src'])
+        nodes_trg, graph_trg = conll2graph(v['trg'])
+        pos_score = 0
+        edge_score = 0
+        pos_counter = 0
+        edge_counter = 0
+        for src_ind, trg_ind in v['ali'].items():
+            if src_ind == 'sentence':
+                continue
+            src_ind = str(src_ind)
+            trg_ind = str(trg_ind)
+            trg_pos = nodes_trg[trg_ind]['pos']
+            trg_edge_type = get_edge_type_to_parent(trg_ind, graph_trg)
+            src_pos = nodes_src[src_ind]['pos']
+            src_edge_type = get_edge_type_to_parent(src_ind, graph_src)
+            if src_pos in pos_prob and trg_pos in pos_prob.index:
+                pos_score += pos_prob[src_pos][trg_pos]
+                pos_counter += 1
+            if src_edge_type in edge_prob and trg_edge_type in \
+                    edge_prob.index:
+                edge_score += edge_prob[src_edge_type][trg_edge_type]
+                edge_counter += 1
+        if pos_counter != 0:
+            pos_score /= pos_counter
+            pos_score_list.append(pos_score)
+        if edge_counter != 0:
+            edge_score /= edge_counter
+            edge_score_list.append(edge_score)
+
+    scores = pd.DataFrame({'name': trg_conllu_path[25:-13],'pos':
+        pos_score_list,
+                           'edge': edge_score_list})
+
+    system_score_pos = sum(pos_score_list) / len(pos_score_list)
+    system_score_edge = sum(edge_score_list) / len(edge_score_list)
+    print(trg_conllu_path[25:-13] + " POS " + str(system_score_pos) + " "
+                                                                      "Edge "
+          + str(system_score_edge))
+    is_header = True
+    if os.path.exists('scores_reg_newstest18_deen.csv'):
+        is_header = False
+    with open('scores_reg_newstest18_deen.csv', 'a') as f:
+        scores.to_csv(f, header=is_header)
+
+if __name__ == '__main__':
+    assert (len(sys.argv) == 6), ("usage: src_conllu_path trg_conllu_path "
+                                  "align_path "
+              "train_mat_pos train_mat_edge")
+    src_conllu_path = sys.argv[1]
+    trg_conllu_path = sys.argv[2]
+    elmfo_file = sys.argv[3]
+    train_mat_pos_file = sys.argv[4]
+    train_mat_edge_file = sys.argv[5]
+    main(src_conllu_path, trg_conllu_path, elmfo_file, train_mat_pos_file,
+         train_mat_edge_file)
