@@ -27,7 +27,7 @@ def main(src_conllu_path, trg_conllu_path, elmfo_file, train_mat_pos_file,
         final_dict[i] = {'src': source_blocks[i], 'trg': trg_blocks[i],
                          'ali': ali_blocks[i]}
 
-    # smoothing the matrices
+    #  smoothing the matrices
     pos_mat += 1
     edge_mat += 1
 
