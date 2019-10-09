@@ -1,0 +1,233 @@
+import sys
+from collections import Counter
+import pandas as pd
+import numpy as np
+
+def conll2graph(record):
+    """Converts sentences described using CoNLL-U format
+    (http://universaldependencies.org/format.html) to graphs.
+    Returns a dictionary of nodes (wordforms and POS tags indexed
+    by line numbers) together with a graph of the dependencies encoded
+    as adjacency lists of (node_key, relation_label, direction[up or down]) tuples."""
+    graph = {}
+    nodes = {}
+    for line in record.splitlines():
+        if line.startswith('#'):
+            continue
+        fields = line.strip('\n').split('\t')
+        key = fields[0]
+        # Ignore compound surface keys for aux, du, etc.
+        # Ignore hidden additional nodes for orphan handling
+        if '-' in key or '.' in key:
+            continue
+        wordform = fields[1]
+        pos = fields[3]
+        parent = fields[6]
+        relation = fields[7]
+        nodes[key] = {
+            'wordform': wordform,
+            'pos': pos,
+            'relation': relation,
+            'parent': parent
+        }
+        if key not in graph:
+            graph[key] = []
+        if parent not in graph:
+            graph[parent] = []
+        graph[key].append((parent, relation, 'up'))
+        graph[parent].append((key, relation, 'down'))
+    return (nodes, graph)
+
+
+def extract_blocks(fobj):
+    blocks = []
+    tmp = []
+    for line in fobj:
+        stripped = line.strip()
+        if stripped == "# newdoc":
+            stripped = None
+        # Either a block has just ended or we are between blocks
+        if not stripped:
+            if not tmp:
+                continue
+            else:
+                blocks.append('\n'.join(tmp))
+                tmp = []
+        else:
+            tmp.append(stripped)
+    if tmp:
+        blocks.append('\n'.join(tmp))
+    return blocks
+
+
+def first_or_none(lst):
+    # Return the first element of a list if it exists and is not an empty string
+    if len(lst) > 0 and lst[0]:
+        return lst[0]
+    else:
+        return None
+
+
+def get_upgoing_relation(node, graph):
+    rel = None
+    for edge in graph[node]:
+        if edge[-1] == 'up':
+            rel = edge[1]
+            break
+    assert rel != None
+    return rel
+
+
+from queue import Queue
+def get_node_depth(node, graph):
+    """A BFS-based implementation."""
+    cur_depth = 0
+    q = Queue()
+    q.put(('0',0))
+    visited = set()
+    visited.add('0')
+    while not q.empty():
+        current_node, current_depth = q.get()
+        for neighbour, neighbour_type, neighbour_direction in graph[current_node]:
+            if neighbour == node:
+                return current_depth+1
+            elif neighbour not in visited:
+                q.put((neighbour, current_depth+1))
+            visited.add(neighbour)
+    raise IndexError("Target node unreachable")
+
+def highest_or_none(indices, graph):
+     if indices[0] == 'X':
+         return None
+     min_depth = 1000
+     argmin = None
+     for i in indices:
+         key = str(i)
+         depth = get_node_depth(key, graph)
+         if depth < min_depth:
+             min_depth = depth
+             argmin = key
+     assert argmin is not None
+     return argmin
+
+
+def confusion_dict2matrix(cd):
+    'Takes as input a map[string -> Counter[string -> int]]. Returns a Pandas dataframe.'
+    row_keys = sorted(cd)
+    column_keys = row_keys + ['Other']
+    conf_matrix = np.zeros(
+        (len(row_keys), len(column_keys)),
+        int
+    )
+    conf_df = pd.DataFrame(conf_matrix)
+    conf_df.index = row_keys
+    conf_df.columns = column_keys
+    for row_key, counter in cd.items():
+        for k, val in counter.items():
+            if k in column_keys:
+                column_key = k
+            else:
+                column_key = 'Other'
+            conf_df.loc[row_key][column_key] += val
+    return conf_df
+
+def get_alignment_dict(f, records_trg):
+    # dict of alignment of sentences
+    full_alignment = {}
+    sentence_num = 0
+    sentence = f.readline()[:-1]
+    while (sentence):
+        nodes, graph = conll2graph(records_trg[sentence_num])
+        sentence = f.readline()[:-1]
+        alignment_sentence = f.readline()[:-1]
+        alignment_array = alignment_sentence.split()
+        key = 0
+        alignment = {'sentence': sentence,0: []}
+        old = ""
+        for new in alignment_array:
+            # if finished adding all aligned words
+            if new == "})":
+                # we want to take highest aligned word
+                if key != 0 and len(alignment[key]) > 1:
+                    alignment[key] = highest_or_none(alignment[key],
+                                                      graph)
+                # aligned to NULL --> not aligned, can delete
+                elif key == 0 or len(alignment[key]) == 0:
+                    del alignment[key]
+                # can overwrite the list with its single element
+                else:
+                    alignment[key] = alignment[key][0]
+                # add next key to the dict
+                key += 1
+                alignment[key] = []
+            # in this case it is either the word that gets aligned or the
+            # word number aligned to
+            elif new not in ["({"] and old not in ["", "})"]:
+                if new.isdigit():
+                    alignment[key].append(new)
+            old = new
+        # we added an extra key in the end, can delete it
+        del alignment[key]
+        # add alignment of sentence and continue to next one
+        full_alignment[sentence_num] = alignment
+        sentence = f.readline()[:-1]
+        sentence_num += 1
+    return full_alignment
+
+def get_pos_and_edge_matrix(f_src, f_trg, f_A3_final):
+    records_src = extract_blocks(f_src)
+    records_trg = extract_blocks(f_trg)
+    records_ali = get_alignment_dict(f_A3_final, records_trg)
+    final_dict = {}
+    for i in range(len(records_trg)):
+        final_dict[i] = {'src': records_src[i], 'trg': records_trg[i], 'ali':
+            records_ali[i]}
+
+    confusion_dict_pos = {}
+    confusion_dict_edge_type = {}
+    for k, v in final_dict.items():
+        nodes_src, graph_src = conll2graph(v['src'])
+        nodes_trg, graph_trg = conll2graph(v['trg'])
+        for src_ind, trg_ind in v['ali'].items():
+            src_ind = str(src_ind)
+            if not src_ind.isdigit(): # wanted the sentence to be in the dict
+                # for debug
+                continue
+            trg_ind = str(trg_ind)
+            trg_pos = nodes_trg[trg_ind]['pos']
+            trg_edge_type = get_upgoing_relation(trg_ind, graph_trg)
+            src_pos = nodes_src[src_ind]['pos']
+            src_edge_type = get_upgoing_relation(src_ind, graph_src)
+
+            if trg_pos not in confusion_dict_pos:
+                confusion_dict_pos[trg_pos] = Counter()
+            confusion_dict_pos[trg_pos][src_pos] += 1
+
+            if trg_edge_type not in confusion_dict_edge_type:
+                confusion_dict_edge_type[trg_edge_type] = Counter()
+            confusion_dict_edge_type[trg_edge_type][src_edge_type] += 1
+
+    return confusion_dict2matrix(confusion_dict_pos),confusion_dict2matrix(confusion_dict_edge_type)
+
+
+if __name__ == '__main__':
+    assert len(sys.argv) == 5, ("usage: src_conllu_path trg_conllu_path "
+                                 "A3_path output_path")
+
+    src_conllu_path = sys.argv[1]
+    trg_conllu_path = sys.argv[2]
+    A3_path = sys.argv[3]
+    output_path = sys.argv[4]
+
+    f_src = open(src_conllu_path, "r", encoding='utf8')
+    f_trg = open(trg_conllu_path, "r", encoding='utf8')
+    f_A3 = open(A3_path, "r", encoding='utf8')
+
+    pos_mat, edge_mat = get_pos_and_edge_matrix(f_src, f_trg, f_A3)
+
+    # pos_mat.to_csv(output_path + "_giza_pos.csv")
+    # edge_mat.to_csv(output_path + "_giza_edge.csv")
+
+    f_src.close()
+    f_trg.close()
+    f_A3.close()
