@@ -1,0 +1,462 @@
+import sys
+import collections
+
+def conll2graph(record):
+    """Converts sentences described using CoNLL-U format
+    (http://universaldependencies.org/format.html) to graphs.
+    Returns a dictionary of nodes (wordforms and POS tags indexed
+    by line numbers) together with a graph of the dependencies encoded
+    as adjacency lists of (node_key, relation_label, direction[up or down]) tuples."""
+    graph = {}
+    nodes = {}
+    for line in record:
+        if line.startswith('#'):
+            continue
+        fields = line.strip('\n').split('\t')
+        key = int(fields[0])
+        # Ignore compound surface keys for aux, du, etc.
+        # Ignore hidden additional nodes for orphan handling
+        # if '-' in key or '.' in key:
+        #     continue
+        wordform = fields[1]
+        pos = fields[3]
+        parent = int(fields[6])
+        relation = fields[7]
+        nodes[key] = {
+            'wordform': wordform,
+            'pos': pos,
+            'relation': relation,
+            'parent': parent
+        }
+        if key not in graph:
+            graph[key] = []
+        if parent not in graph:
+            graph[parent] = []
+        graph[parent].append((key, relation, 'down'))
+        if relation == 'root':
+            graph['root'] = key
+    return (nodes, graph)
+
+def ngrams(conllu, n):
+    print('\n'.join(conllu))
+    nodes, graph = conll2graph(conllu) # this is Dmitry's code to get
+    # dependency tree
+    return ud_ngrams_wordform_direction_traverse_undirected(graph, nodes, n)
+
+
+def extract_blocks(fobj):
+    blocks = []
+    tmp = []
+    for line in fobj:
+        stripped = line.strip()
+        # Either a block has just ended or we are between blocks
+        if not stripped:
+            if not tmp:
+                continue
+            else:
+                blocks.append('\n'.join(tmp))
+                tmp = []
+        else:
+            tmp.append(stripped)
+    if tmp:
+        blocks.append('\n'.join(tmp))
+    return blocks
+	
+	
+def print_tree(root_key, graph, nodes):
+    """
+    print in format: node, parent
+    :param root_key:
+    :param graph:
+    :param nodes:
+    :return: None
+    """
+    parent = nodes[root_key]['parent']
+    if parent == 0:
+        parent_word = 'root'
+    else:
+        parent_word = nodes[parent]['wordform']
+    print(nodes[root_key]['wordform'], parent_word)
+    for son_key, relation, direction in graph[root_key]:
+        if direction == 'down':
+            print_tree(son_key, graph, nodes)
+
+def ud_ngrams_wordform(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, wordform, graph):
+        deque.append(wordform)
+        if len(deque) >= n:
+            paths.append(list(deque)[-n:])
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            helper(son, nodes[son]['wordform'], graph)
+        deque.pop()
+        return
+    paths = []
+    deque = collections.deque([])
+    helper(graph['root'], nodes[graph['root']]['wordform'], graph)
+    for path in paths:
+        yield tuple(path)
+    return
+
+def ud_ngrams_wordform_edge_type(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, wordform, graph):
+        deque.append(wordform)
+        # node1 edge1 node2 edge2 node3 - path len of size n has in the
+        # path n nodes and n - 1 edges.
+        if len(deque) >= (2*n - 1):
+            paths.append(list(deque)[-(2*n - 1):])
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            deque.append(relation) # add edge
+            helper(son, nodes[son]['wordform'], graph)
+            deque.pop() # pop edge
+        deque.pop()
+        return
+    paths = []
+    deque = collections.deque([])
+    helper(graph['root'], nodes[graph['root']]['wordform'], graph)
+    for path in paths:
+        yield tuple(path)
+    return
+
+def ud_ngrams_pos_edge_type(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, pos, graph):
+        deque.append(pos)
+        # node1 edge1 node2 edge2 node3 - path len of size n has in the
+        # path n nodes and n - 1 edges.
+        if len(deque) >= (2*n - 1):
+            paths.append(list(deque)[-(2*n - 1):])
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            deque.append(relation) # add edge
+            helper(son, nodes[son]['pos'], graph)
+            deque.pop() # pop edge
+        deque.pop()
+        return
+    paths = []
+    deque = collections.deque([])
+    helper(graph['root'], nodes[graph['root']]['pos'], graph)
+    for path in paths:
+        yield tuple(path)
+    return
+
+def ud_ngrams_edge_type(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, pos, graph):
+        # node1 edge1 node2 edge2 node3 - path len of size n has in the
+        # path n has n - 1 edges.
+        if len(deque) >= (n - 1):
+            paths.append(list(deque)[-(n - 1):])
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            deque.append(relation) # add edge
+            helper(son, nodes[son]['pos'], graph)
+            deque.pop() # pop edge
+        return
+    if n == 1:
+        return ud_ngrams_path_len(graph, nodes, n)
+    paths = []
+    deque = collections.deque([])
+    helper(graph['root'], nodes[graph['root']]['pos'], graph)
+    for path in paths:
+        yield tuple(path)
+    return
+
+def ud_ngrams_pos(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, pos, graph):
+        deque.append(pos)
+        # node1 edge1 node2 edge2 node3 - path len of size n has in the
+        # path n nodes and n - 1 edges.
+        if len(deque) >= (n):
+            paths.append(list(deque)[-n:])
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            helper(son, nodes[son]['pos'], graph)
+        deque.pop()
+        return
+    paths = []
+    deque = collections.deque([])
+    helper(graph['root'], nodes[graph['root']]['pos'], graph)
+    for path in paths:
+        yield tuple(path)
+    return
+
+def ud_ngrams_pos_traverse_undirected(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, pos, graph):
+        lst.append(pos)
+        # node1 edge1 node2 edge2 node3 - path len of size n has in the
+        # path n nodes and n - 1 edges.
+        # if len(deque) >= (n):
+        #     paths.append(list(deque)[-n:])
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            helper(son, nodes[son]['pos'], graph)
+            lst.append(pos)
+        return
+    lst = []
+    helper(graph['root'], nodes[graph['root']]['pos'], graph)
+    paths = []
+    for i in range(len(lst) - n + 1):
+        paths.append(lst[i:i+n])
+    for path in paths:
+        yield tuple(path)
+    return
+
+def ud_ngrams_pos_edge_traverse_undirected(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, pos, graph):
+        lst.append(pos)
+        # node1 edge1 node2 edge2 node3 - path len of size n has in the
+        # path n nodes and n - 1 edges.
+        # if len(deque) >= (n):
+        #     paths.append(list(deque)[-n:])
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            lst.append(relation)
+            helper(son, nodes[son]['pos'], graph)
+            lst.append(relation)
+            lst.append(pos)
+        return
+    lst = []
+    helper(graph['root'], nodes[graph['root']]['pos'], graph)
+    paths = []
+    for i in range(len(lst) - (2*n - 1) + 1):
+        paths.append(lst[i:i+(2*n - 1)])
+    for path in paths:
+        yield tuple(path)
+    return
+
+def ud_ngrams_wordform_traverse_undirected(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, wordform, graph):
+        lst.append(wordform)
+        # node1 edge1 node2 edge2 node3 - path len of size n has in the
+        # path n nodes and n - 1 edges.
+        # if len(deque) >= (n):
+        #     paths.append(list(deque)[-n:])
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            helper(son, nodes[son]['wordform'], graph)
+            lst.append(wordform)
+        return
+    lst = []
+    helper(graph['root'], nodes[graph['root']]['wordform'], graph)
+    paths = []
+    for i in range(len(lst) - n + 1):
+        paths.append(lst[i:i+n])
+    for path in paths:
+        yield tuple(path)
+    return
+
+def ud_ngrams_pos_direction_traverse_undirected(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, pos, graph):
+        lst.append(pos)
+        # node1 edge1 node2 edge2 node3 - path len of size n has in the
+        # path n nodes and n - 1 edges.
+        # if len(deque) >= (n):
+        #     paths.append(list(deque)[-n:])
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            lst.append('down')
+            helper(son, nodes[son]['pos'], graph)
+            lst.append('up')
+            lst.append(pos)
+        return
+    lst = []
+    helper(graph['root'], nodes[graph['root']]['pos'], graph)
+    paths = []
+    for i in range(len(lst) - (2*n - 1) + 1):
+        paths.append(lst[i:i+(2*n - 1)])
+    for path in paths:
+        yield tuple(path)
+    return
+
+def ud_ngrams_wordform_direction_traverse_undirected(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, wordform, graph):
+        lst.append(wordform)
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            lst.append('down')
+            helper(son, nodes[son]['wordform'], graph)
+            lst.append('up')
+            lst.append(wordform)
+        return
+    lst = []
+    helper(graph['root'], nodes[graph['root']]['wordform'], graph)
+    for i in range(len(lst) - (2*n - 1) + 1):
+        print(tuple(lst[i:i+(2*n - 1)]))
+        yield tuple(lst[i:i+(2*n - 1)]) # get path of length n
+    return
+
+def ud_ngrams_direction_test_traverse_undirected(graph, nodes, n):
+    """
+    Implemented with a dfs and a queue to keep the current path
+    :param graph: dependecy tree
+    :param nodes: data about nodes in graph
+    :param n: size of n-gram
+    :return: paths in the dependency tree of length n
+    """
+    def helper(root, pos, graph):
+        lst.append('A')
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            lst.append('down') # direction to son
+            helper(son, nodes[son]['pos'], graph)
+            lst.append('up') # direction from son
+            lst.append('A')
+        return
+    lst = []
+    helper(graph['root'], nodes[graph['root']]['pos'], graph)
+    for i in range(len(lst) - (2*n - 1) + 1):
+        print(tuple(lst[i:i+(2*n - 1)]))
+        yield tuple(lst[i:i+(2*n - 1)]) # get path of length n
+    return
+
+def ud_ngrams_specific_edge_undirected(graph, nodes, n):
+    core = set(["iobj",
+    "nsubj",
+    "nsubj:pass",
+    "obj",
+    "obl",
+    "obl:agent",
+    "obl:arg",
+    "obl:npmod",
+    "obl:tmod",
+    "root"])
+    def helper(root, pos, graph):
+        lst.append(pos)
+        for son, relation, direction in graph[root]:
+            if direction != 'down':
+                continue
+            if relation in core:
+                lst.append(relation)
+            else: lst.append(direction)
+            helper(son, nodes[son]['pos'], graph)
+            if relation in core:
+                lst.append(relation)
+            else: lst.append('up')
+            lst.append(pos)
+        return
+    lst = []
+    helper(graph['root'], nodes[graph['root']]['pos'], graph)
+    paths = []
+    for i in range(len(lst) - (2*n - 1) + 1):
+        paths.append(lst[i:i+(2*n - 1)])
+    # print(paths)
+    for path in paths:
+        yield tuple(path)
+    return
+
+def test(sequence, n):
+    history = []
+    while n > 1:
+        # PEP 479, prevent RuntimeError from being raised when StopIteration bubbles out of generator
+        try:
+            next_item = next(sequence)
+        except StopIteration:
+            # no more data, terminate the generator
+            return
+        history.append('A')
+        n -= 1
+    for item in sequence:
+        history.append('A')
+        yield tuple(history)
+        del history[0]
+
+
+def test(sequence, n):
+    history = []
+    #sequence = ['A'] * len(sequence)
+    while n > 1:
+        # PEP 479, prevent RuntimeError from being raised when StopIteration bubbles out of generator
+        try:
+            next_item = next(sequence)
+        except StopIteration:
+            # no more data, terminate the generator
+            return
+        history.append(next_item)
+        n -= 1
+    for item in sequence:
+        history.append('A')
+        yield tuple(history)
+        del history[0]
+
+
