@@ -1,0 +1,65 @@
+import sys
+from nltk.translate.bleu_score import sentence_bleu, corpus_bleu
+from blue_score_minor_changes_for_ud import sentence_bleu as \
+    sentence_ud_bleu, corpus_bleu as corpus_ud_bleu
+import ud_bleu
+import os
+import pandas as pd
+
+
+if __name__ == '__main__':
+    assert len(sys.argv) == 5, "usage: ref_conllu_file hyp_conllu_dir " \
+                               "ref_file hyp_dir"
+    # get ref conllu in a format for ud_bleu
+    ref_conllu_file = open(sys.argv[1], "r")
+    ref_conllu = ud_bleu.extract_blocks(ref_conllu_file)
+    conllu_corpus_ref = [[ref_block.split("\n")] for ref_block in ref_conllu]
+
+    hyp_conllu_dir = sys.argv[2]
+
+    # get ref in a format for bleu
+    ref_file = open(sys.argv[3])
+    corpus_ref = [[ref_sent.split()] for ref_sent in ref_file.readlines()]
+
+    # columns of pd array
+    system_name_lst = []
+    bleu_scores = []
+    ud_scores = []
+
+    # seg
+    scores = []
+    for sysid, hyp_conllu_file_name in enumerate(os.listdir(hyp_conllu_dir)):
+
+        # get hyp conllu in format for ud_bleu
+        hyp_conllu_file = open(hyp_conllu_dir + "//" + hyp_conllu_file_name, \
+                                                     "r", encoding='utf-8')
+        hyp_conllu = ud_bleu.extract_blocks(hyp_conllu_file)
+        conllu_corpus_hyp = [hyp_block.split("\n") for hyp_block in hyp_conllu]
+
+        # get hyp in a format for bleu
+        hyp_name = sys.argv[4] + "//" + hyp_conllu_file_name[:-7]
+        hyp_file = open(hyp_name, "r", encoding='utf-8')
+        corpus_hyp = [hyp_sent.split() for hyp_sent in hyp_file.readlines()]
+
+        system_name_lst.append(hyp_conllu_file_name[13:-13])
+
+        # # segment level
+        # for i in range(len(corpus_hyp)):
+        #     scores.append((hyp_conllu_file_name[13:-13], i + 1,
+        #                    sentence_ud_bleu(conllu_corpus_ref[i],
+        #                                            conllu_corpus_hyp[i])))
+        #     print(scores[i])
+
+        #corpus level
+        # add bleu score
+        bleu_scores.append(corpus_bleu(corpus_ref, corpus_hyp))
+
+        # add ud_bleu score
+        ud_scores.append(corpus_ud_bleu(conllu_corpus_ref, conllu_corpus_hyp))
+        # ud_scores.append(0)
+
+    df = pd.DataFrame({'system': system_name_lst,
+                  'BLEU': bleu_scores, 'UDBLEU': ud_scores})
+    df.to_csv(
+        "bleu_and_udbleu_222_undirected_wmt18_system_level"
+              ".csv")
