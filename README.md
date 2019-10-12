@@ -9,3 +9,4 @@ ud_bleu is python script that holds the ngrams function for the bleu metric and 
 
 train_mat are matrices that has the pos/edge type transformation matrices from german to english based on the https://linguatools.org/tools/corpora/webcrawl-parallel-corpus-german-english-2015/
 
+two csv files that has the results for two ud_bleu metrics. 
